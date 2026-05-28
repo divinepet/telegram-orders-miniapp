@@ -57,7 +57,7 @@ export default function App() {
 		}
 
 		const intervalId = window.setInterval(() => {
-			reload(me).catch(() => {
+			reload().catch(() => {
 				// Не показываем ошибку фонового обновления пользователю.
 			})
 		}, 10000)
