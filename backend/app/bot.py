@@ -1,10 +1,16 @@
+import asyncio
+
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.filters import CommandStart
+from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
+from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, MenuButtonWebApp, WebAppInfo
 from fastapi import HTTPException
+from sqlalchemy import select
+
 from .auth import TelegramIdentity, find_allowed_user
 from .config import get_settings
 from .database import SessionLocal
+from .models import User
 from .services import app_button, claim_job, update_messages_after_claim
 
 settings = get_settings()
@@ -28,6 +34,56 @@ async def start_handler(message: Message) -> None:
     await message.answer(
         f"Доступ разрешён. Ваша роль: {role}. Откройте приложение кнопкой ниже.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[app_button()]]),
+    )
+
+
+@router.message(Command("all"))
+async def broadcast_handler(message: Message) -> None:
+    identity = TelegramIdentity(message.from_user.id, message.from_user.first_name, message.from_user.username)
+    try:
+        async with SessionLocal() as session:
+            sender = await find_allowed_user(session, identity)
+            await session.commit()
+    except HTTPException:
+        await message.answer("Для вас бот недоступен.")
+        return
+
+    if not sender.is_admin:
+        await message.answer("Команда доступна только администраторам.")
+        return
+
+    parts = (message.text or "").split(maxsplit=1)
+    broadcast_text = parts[1].strip() if len(parts) > 1 else ""
+    if not broadcast_text:
+        await message.answer("Использование: /all <текст сообщения>")
+        return
+
+    async with SessionLocal() as session:
+        recipients = (
+            await session.scalars(
+                select(User).where(User.is_active.is_(True))
+            )
+        ).all()
+
+    sent = 0
+    failed = 0
+
+    for recipient in recipients:
+        try:
+            await bot.send_message(recipient.telegram_id, broadcast_text)
+            sent += 1
+        except TelegramRetryAfter as error:
+            await asyncio.sleep(error.retry_after)
+            try:
+                await bot.send_message(recipient.telegram_id, broadcast_text)
+                sent += 1
+            except TelegramAPIError:
+                failed += 1
+        except TelegramAPIError:
+            failed += 1
+
+    await message.answer(
+        f"Рассылка завершена. Доставлено: {sent}. Не доставлено: {failed}."
     )
 
 
