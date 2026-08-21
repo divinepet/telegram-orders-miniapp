@@ -26,7 +26,12 @@ class JobResponse(BaseModel):
     closed_at: datetime | None
     final_amount: int | None
     assignee_name: str | None = None
+    comment_text: str | None = None
+    comment_created_at: datetime | None = None
+    comment_updated_at: datetime | None = None
 
+class CommentRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
 
 class CompleteRequest(BaseModel):
     amount: int = Field(ge=0, le=2_000_000_000)

@@ -12,6 +12,7 @@ class Base(DeclarativeBase):
 
 class JobStatus(StrEnum):
     WAITING = "WAITING"
+    AWAITING_CALL = "AWAITING_CALL"
     ACTIVE = "ACTIVE"
     COMPLETED = "COMPLETED"
 
@@ -47,6 +48,9 @@ class Job(Base):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     assignee_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     final_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    comment_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    comment_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    comment_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     notification_round: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     assignee: Mapped[User | None] = relationship()
 

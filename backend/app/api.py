@@ -7,7 +7,15 @@ from .auth import current_user, require_admin
 from .bot import bot
 from .database import get_session
 from .models import AuditAction, AuditLog, Delivery, Job, JobStatus, User
-from .schemas import AddUserRequest, CompleteRequest, JobCreate, JobResponse, MeResponse, UserResponse
+from .schemas import (
+    AddUserRequest,
+    CommentRequest,
+    CompleteRequest,
+    JobCreate,
+    JobResponse,
+    MeResponse,
+    UserResponse,
+)
 from .services import (
     claim_job,
     delete_messages_for_round,
@@ -25,10 +33,27 @@ def map_job(
     admin: bool = False,
     user: User | None = None,
 ) -> JobResponse:
-    can_see_full_text = admin or (
+    is_assignee = (
         user is not None
         and job.assignee_id == user.id
-        and job.status in (JobStatus.ACTIVE, JobStatus.COMPLETED)
+    )
+
+    can_see_full_text = admin or (
+        is_assignee
+        and job.status in (
+            JobStatus.AWAITING_CALL,
+            JobStatus.ACTIVE,
+            JobStatus.COMPLETED,
+        )
+    )
+
+    can_see_comment = admin or (
+        is_assignee
+        and job.status in (
+            JobStatus.AWAITING_CALL,
+            JobStatus.ACTIVE,
+            JobStatus.COMPLETED,
+        )
     )
 
     return JobResponse(
@@ -40,6 +65,10 @@ def map_job(
         closed_at=job.closed_at,
         final_amount=job.final_amount,
         assignee_name=display_name(job.assignee) if admin and job.assignee else None,
+
+        comment_text=job.comment_text if can_see_comment else None,
+        comment_created_at=job.comment_created_at if can_see_comment else None,
+        comment_updated_at=job.comment_updated_at if can_see_comment else None,
     )
 
 
@@ -78,7 +107,11 @@ async def list_jobs(
                 or_(
                     and_(
                         Job.assignee_id == user.id,
-                        Job.status.in_([JobStatus.ACTIVE, JobStatus.COMPLETED]),
+                        Job.status.in_([
+                            JobStatus.AWAITING_CALL,
+                            JobStatus.ACTIVE,
+                            JobStatus.COMPLETED,
+                        ]),
                     ),
                     and_(
                         Job.status == JobStatus.WAITING,
@@ -133,6 +166,95 @@ async def claim_job_from_miniapp(
         user=result.user,
     )
 
+@router.post("/jobs/{job_id}/called", response_model=JobResponse)
+async def mark_job_called(
+    job_id: int,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    async with session.begin():
+        job = await session.scalar(
+            select(Job)
+            .where(Job.id == job_id)
+            .with_for_update()
+        )
+
+        if (
+            not job
+            or job.status != JobStatus.AWAITING_CALL
+            or job.assignee_id != user.id
+        ):
+            raise HTTPException(
+                409,
+                "Заявка не ожидает звонка или назначена другому исполнителю",
+            )
+
+        job.status = JobStatus.ACTIVE
+
+    await session.refresh(job)
+
+    await notify_admins(
+        bot,
+        f"📞 Исполнитель {display_name(user)} созвонился с клиентом по заявке #{job.id}.",
+    )
+
+    return map_job(
+        job,
+        admin=False,
+        user=user,
+    )
+
+@router.put("/jobs/{job_id}/comment", response_model=JobResponse)
+async def save_job_comment(
+    job_id: int,
+    payload: CommentRequest,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    text = payload.text.strip()
+
+    if not text:
+        raise HTTPException(422, "Комментарий не может быть пустым")
+
+    async with session.begin():
+        job = await session.scalar(
+            select(Job)
+            .where(Job.id == job_id)
+            .with_for_update()
+        )
+
+        if not job:
+            raise HTTPException(404, "Заявка не найдена")
+
+        if job.assignee_id != user.id:
+            raise HTTPException(
+                403,
+                "Комментарий может оставить только исполнитель заявки",
+            )
+
+        if job.status not in (
+            JobStatus.AWAITING_CALL,
+            JobStatus.ACTIVE,
+        ):
+            raise HTTPException(
+                409,
+                "Комментарий можно изменять только пока заявка ожидает звонка или находится в работе",
+            )
+
+        if job.comment_text is None:
+            job.comment_created_at = func.now()
+
+        job.comment_text = text
+        job.comment_updated_at = func.now()
+
+    await session.refresh(job)
+
+    return map_job(
+        job,
+        admin=False,
+        user=user,
+    )
+
 @router.post("/jobs/{job_id}/complete", response_model=JobResponse)
 async def complete_job(job_id: int, payload: CompleteRequest, user: User = Depends(current_user), session: AsyncSession = Depends(get_session)):
     async with session.begin():
@@ -148,7 +270,11 @@ async def complete_job(job_id: int, payload: CompleteRequest, user: User = Depen
     await session.refresh(job)
     await delete_messages_for_round(bot, job.id, job.notification_round)
     await notify_admins(bot, f"💰 Заявка #{job.id} выполнена исполнителем {display_name(user)}. Сумма: {payload.amount} ₽")
-    return map_job(job)
+    return map_job(
+        job,
+        admin=False,
+        user=user,
+    )
 
 
 @router.post("/jobs/{job_id}/decline", response_model=dict)
@@ -156,13 +282,23 @@ async def decline_job(job_id: int, user: User = Depends(current_user), session: 
     async with session.begin():
         job = await session.scalar(select(Job).where(Job.id == job_id).with_for_update())
         locked_user = await session.scalar(select(User).where(User.id == user.id).with_for_update())
-        if not job or job.status != JobStatus.ACTIVE or job.assignee_id != user.id:
+        if (
+            not job
+            or job.status not in (
+                JobStatus.AWAITING_CALL,
+                JobStatus.ACTIVE,
+            )
+            or job.assignee_id != user.id
+        ):
             raise HTTPException(409, "Заявка не находится у вас в работе")
         previous_round = job.notification_round
         job.status = JobStatus.WAITING
         job.assignee_id = None
         job.notification_round += 1
         job.offering_started_at = func.now()
+        job.comment_text = None
+        job.comment_created_at = None
+        job.comment_updated_at = None
         locked_user.rating = max(Decimal("1.00"), locked_user.rating - Decimal("0.50"))
         session.add(AuditLog(job_id=job.id, actor_id=user.id, action=AuditAction.DECLINED))
     await delete_messages_for_round(bot, job_id, previous_round)
@@ -179,7 +315,10 @@ async def list_users(
     require_admin(user)
 
     active_jobs_count = func.count(Job.id).filter(
-        Job.status == JobStatus.ACTIVE
+        Job.status.in_([
+            JobStatus.AWAITING_CALL,
+            JobStatus.ACTIVE,
+        ])
     ).label("active_jobs")
 
     completed_jobs_count = func.count(Job.id).filter(
@@ -240,15 +379,29 @@ async def ban_user(telegram_id: int, user: User = Depends(current_user), session
         if target.is_admin:
             raise HTTPException(409, "Администратора нельзя заблокировать из MiniApp")
         target.is_active = False
-        jobs = (await session.scalars(select(Job).where(
-            Job.assignee_id == target.id, Job.status == JobStatus.ACTIVE
-        ).with_for_update())).all()
+        jobs = (
+            await session.scalars(
+                select(Job)
+                .where(
+                    Job.assignee_id == target.id,
+                    Job.status.in_([
+                        JobStatus.AWAITING_CALL,
+                        JobStatus.ACTIVE,
+                    ]),
+                )
+                .with_for_update()
+            )
+        ).all()
         for job in jobs:
             released.append((job.id, job.notification_round))
             job.assignee_id = None
             job.status = JobStatus.WAITING
             job.notification_round += 1
             job.offering_started_at = func.now()
+
+            job.comment_text = None
+            job.comment_created_at = None
+            job.comment_updated_at = None
     for job_id, old_round in released:
         await delete_messages_for_round(bot, job_id, old_round)
         await dispatch_waiting_jobs(bot, only_job_id=job_id)

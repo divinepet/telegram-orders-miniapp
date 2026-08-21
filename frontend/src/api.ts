@@ -31,6 +31,17 @@ export const api = {
 			method: 'POST',
 		}),
 
+	called: (id: number) =>
+		request<Job>(`/jobs/${id}/called`, {
+			method: 'POST',
+		}),
+
+	saveComment: (id: number, text: string) =>
+		request<Job>(`/jobs/${id}/comment`, {
+			method: 'PUT',
+			body: JSON.stringify({ text }),
+		}),
+
 	complete: (id: number, amount: number) =>
 		request<Job>(`/jobs/${id}/complete`, {
 			method: 'POST',

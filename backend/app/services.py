@@ -52,7 +52,18 @@ async def notify_admins(bot: Bot, text: str) -> None:
 
 
 async def active_count(session, user_id: int) -> int:
-    return int(await session.scalar(select(func.count(Job.id)).where(Job.assignee_id == user_id, Job.status == JobStatus.ACTIVE)) or 0)
+    return int(
+        await session.scalar(
+            select(func.count(Job.id)).where(
+                Job.assignee_id == user_id,
+                Job.status.in_([
+                    JobStatus.AWAITING_CALL,
+                    JobStatus.ACTIVE,
+                ]),
+            )
+        )
+        or 0
+    )
 
 
 async def eligible_cutoff(job: Job) -> Decimal:
@@ -145,7 +156,7 @@ async def claim_job(
             if await active_count(session, user.id) >= 5:
                 return ClaimResult(False, "У вас уже 5 активных заявок.")
 
-            job.status = JobStatus.ACTIVE
+            job.status = JobStatus.AWAITING_CALL
             job.assignee_id = user.id
 
             session.add(
@@ -170,7 +181,7 @@ async def update_messages_after_claim(bot: Bot, job: Job, assignee: User) -> Non
                 await bot.edit_message_text(
                     chat_id=delivery.chat_id,
                     message_id=delivery.message_id,
-                    text=f"<b>Заявка #{job.id} в работе</b>\n\n{html.escape(job.full_text)}",
+                    text=f"<b>Заявка #{job.id} ожидает звонка</b>\n\n{html.escape(job.full_text)}",
                     parse_mode="HTML",
                     reply_markup=full_job_keyboard(),
                 )

@@ -1,9 +1,17 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { FormEvent, PointerEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api'
 import type { Job, Me, Status, User } from './types'
-import { Calendar, CircleUserRound } from 'lucide-react'
+import { Calendar, Check, CircleUserRound, Edit, Pen, Phone, Star, X } from 'lucide-react'
+import Tippy from '@tippyjs/react'
+import 'tippy.js/themes/material.css'
+import 'tippy.js/dist/tippy.css'
 
-const statusText: Record<Status, string> = { WAITING: 'Ожидает', ACTIVE: 'В работе', COMPLETED: 'Завершено' }
+const statusText: Record<Status, string> = {
+	WAITING: 'Ожидает',
+	AWAITING_CALL: 'Ожидает звонка',
+	ACTIVE: 'В работе',
+	COMPLETED: 'Завершено',
+}
 const money = (value?: number) => value === undefined ? '' : `${value.toLocaleString('ru-RU')} ₽`
 const date = (value?: string) => value ? new Date(value).toLocaleString('ru-RU', { dateStyle: 'medium' }) : '—'
 
@@ -13,6 +21,7 @@ function formatDate(value?: string) {
 	return new Date(value).toLocaleDateString('ru-RU', {
 		day: 'numeric',
 		month: 'long',
+		year: 'numeric',
 	})
 }
 
@@ -114,7 +123,7 @@ export default function App() {
 						<div style={{ color: 'gray', fontSize: 14 }}>{me.is_admin ? 'Администратор' : 'Пользователь'}</div>
 					</div>
 				</div>
-				<div className="rating">⭐ {Number(me.rating).toFixed(1)}</div>
+				<div className="rating"><Star stroke='orange' fill='orange' size={20} />{Number(me.rating).toFixed(1)}</div>
 
 			</header>
 			{me.is_admin && <nav className="tabs">
@@ -147,32 +156,101 @@ function ScreenMessage({ text }: { text: string }) { return <div className="scre
 
 function JobsView({ jobs, admin, onRefresh, onCreate }: { jobs: Job[]; admin: boolean; onRefresh: () => Promise<void>; onCreate: () => void }) {
 	const groups = useMemo(() => ({
-		WAITING: jobs.filter(j => j.status === 'WAITING'), ACTIVE: jobs.filter(j => j.status === 'ACTIVE'), COMPLETED: jobs.filter(j => j.status === 'COMPLETED')
+		WAITING: jobs.filter(j => j.status === 'WAITING'),
+		AWAITING_CALL: jobs.filter(j => j.status === 'AWAITING_CALL'),
+		ACTIVE: jobs.filter(j => j.status === 'ACTIVE'),
+		COMPLETED: jobs.filter(j => j.status === 'COMPLETED'),
 	}), [jobs])
 	return (
 		<section className='group-wrapper'>
 			{admin &&
 				<button className="primary" onClick={onCreate}>Создать новую заявку</button>
 			}
-			{(['WAITING', 'ACTIVE', 'COMPLETED'] as Status[]).map(status =>
-				<section className="group" key={status}>
-					<h2>{statusText[status]} <span>{groups[status].length}</span></h2>
-					<div className='job-cards'>
-						{groups[status].length !== 0 &&
-							groups[status].map(job =>
+			{(['WAITING', 'AWAITING_CALL', 'ACTIVE', 'COMPLETED'] as Status[]).map(status => {
+
+				if (groups[status].length === 0)
+					return <></>;
+
+				return (
+					<section className="group" key={status}>
+						<h2>{statusText[status]} <span>{groups[status].length}</span></h2>
+						<div className='job-cards'>
+							{groups[status].length !== 0 && groups[status].map(job =>
 								<JobCard key={job.id} job={job} admin={admin} onRefresh={onRefresh} />
-							)
-						}
-					</div>
-				</section>
-			)}
+							)}
+						</div>
+					</section>
+				)
+			})}
 		</section>
+	)
+}
+
+
+function CollapsibleJobText({ text }: { text: string }) {
+	const [expanded, setExpanded] = useState(false)
+	const [overflowing, setOverflowing] = useState(false)
+
+	const ref = useRef<HTMLParagraphElement | null>(null)
+
+	useEffect(() => {
+		const element = ref.current
+		if (!element) return
+
+		const check = () => {
+			if (expanded) return
+
+			setOverflowing(
+				element.scrollHeight > element.clientHeight + 1
+			)
+		}
+
+		check()
+
+		const observer = new ResizeObserver(check)
+		observer.observe(element)
+
+		return () => observer.disconnect()
+	}, [text, expanded])
+
+	const toggle = () => {
+		if (overflowing || expanded) {
+			setExpanded(value => !value)
+		}
+	}
+
+	return (
+		<p
+			ref={ref}
+			className={`job-text ${expanded ? 'expanded' : 'collapsed'}`}
+			onClick={toggle}
+		>
+			{text}
+
+			{/* {!expanded && overflowing && (
+				<span className="job-text-more">
+					…показать больше
+				</span>
+			)} */}
+
+			{expanded && (
+				<span className="job-text-hide">
+					{' '}скрыть
+				</span>
+			)}
+		</p>
 	)
 }
 
 function JobCard({ job, admin, onRefresh }: { job: Job; admin: boolean; onRefresh: () => Promise<void> }) {
 	const [busy, setBusy] = useState(false)
 	const claim = async () => {
+		const confirmed = window.confirm(
+			'Взять эту заявку в работу? После подтверждения она будет закреплена за вами.'
+		)
+
+		if (!confirmed) return
+
 		setBusy(true)
 
 		try {
@@ -185,6 +263,52 @@ function JobCard({ job, admin, onRefresh }: { job: Job; admin: boolean; onRefres
 				(error as Error).message,
 			)
 			await onRefresh()
+		} finally {
+			setBusy(false)
+		}
+	}
+	const called = async () => {
+		setBusy(true)
+
+		try {
+			await api.called(job.id)
+			await onRefresh()
+		} catch (error) {
+			window.Telegram?.WebApp?.showAlert(
+				(error as Error).message,
+			)
+		} finally {
+			setBusy(false)
+		}
+	}
+	const editComment = async () => {
+		const raw = window.prompt(
+			job.comment_text
+				? 'Редактировать комментарий:'
+				: 'Введите комментарий:',
+			job.comment_text ?? ''
+		)
+
+		if (raw === null) return
+
+		const text = raw.trim()
+
+		if (!text) {
+			window.Telegram?.WebApp?.showAlert(
+				'Комментарий не может быть пустым'
+			)
+			return
+		}
+
+		setBusy(true)
+
+		try {
+			await api.saveComment(job.id, text)
+			await onRefresh()
+		} catch (error) {
+			window.Telegram?.WebApp?.showAlert(
+				(error as Error).message
+			)
 		} finally {
 			setBusy(false)
 		}
@@ -203,38 +327,108 @@ function JobCard({ job, admin, onRefresh }: { job: Job; admin: boolean; onRefres
 	return <article className="card">
 		<div className="card-head">
 			<div style={{ fontSize: 14, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
-				Заявка #{job.id}
-				<span style={{ fontWeight: 500, color: '#565c67' }}>({formatDate(job.created_at)}{job.status === 'COMPLETED' ? ` - ${formatDate(job.closed_at)}` : ''})</span></div>
+				<Tippy
+					content={
+						<span style={{ fontWeight: 500 }}>
+							Создано: {formatDate(job.created_at)} <br />
+							{job.status === 'COMPLETED' && `Завершено: ${formatDate(job.closed_at)}`}
+						</span>
+					}
+					placement="top-start"
+					theme='material'
+				>
+					<div className='card-head-left'>
+						<div className='card-header-title'>Заявка #{job.id}</div>
+						{admin && job.assignee_name &&
+							<div className='card-header-author'>
+								{job.assignee_name}
+							</div>
+						}
+					</div>
+				</Tippy>
+			</div>
 			<span className={`badge ${job.status.toLowerCase()}`}>{job.status === 'COMPLETED' ? money(job.final_amount) : statusText[job.status]}</span>
 		</div>
 
-		<p>{job.full_text || job.public_text}</p>
+		<CollapsibleJobText
+			text={job.full_text || job.public_text}
+		/>
 
-		{admin && job.assignee_name &&
-			<div style={{ display: 'flex', alignItems: 'center', color: '#8992a3', fontSize: 13, fontWeight: 600, gap: 3 }}>
-				<CircleUserRound size={16} stroke={'#8992a3'} />
-				{job.assignee_name.replace('@', '')}
-			</div>
-		}
+		{job.comment_text && (
+			<div className={'job-comment'}>
+				<div className="job-comment-title">Комментарий</div>
 
-		{!admin && job.status === 'WAITING' && (
-			<div className="actions">
-				<button
-					className="primary take-job"
-					disabled={busy}
-					onClick={claim}
-				>
-					{busy ? 'Назначаем…' : 'Взять в работу'}
-				</button>
+				<div className={'job-comment-text'}>
+					{job.comment_text}
+				</div>
+
+				<div className="comment-dates">
+					<span>
+						Создан: {date(job.comment_created_at)}
+					</span>
+
+					{job.comment_updated_at &&
+						job.comment_created_at &&
+						new Date(job.comment_updated_at).getTime() !==
+						new Date(job.comment_created_at).getTime() && (
+							<span>
+								Изменён: {date(job.comment_updated_at)}
+							</span>
+						)}
+				</div>
 			</div>
 		)}
 
-		{!admin && job.status === 'ACTIVE' &&
-			<div className="actions">
-				<button className="success" disabled={busy} onClick={complete}>Выполнить заявку</button>
-				<button className="danger" disabled={busy} onClick={decline}>Отказаться</button>
+		{!admin &&
+			<div className='card-bottom-buttons-group'>
+
+				<div className='card-bottom-buttons-topline'>
+					{job.status === 'WAITING' && (
+						<button className="primary take-job" disabled={busy} onClick={claim} >
+							{busy ? 'Назначаем…' : 'Взять в работу'}
+						</button>
+					)}
+					{job.status === 'AWAITING_CALL' &&
+						<button className="success" disabled={busy} onClick={called} >
+							<Check size={18} />
+							Созвонился с клиентом
+						</button>
+					}
+					{job.status === 'ACTIVE' &&
+						<button className="success" disabled={busy} onClick={complete}>
+							<Check size={18} />
+							Выполнить заявку
+						</button>
+					}
+					{(job.status === 'AWAITING_CALL' || job.status === 'ACTIVE') &&
+						<>
+							<button className="primary" disabled={busy} onClick={editComment} style={{ background: '#343440' }}>
+								<Pen size={18} />
+								{job.comment_text ? 'Редактировать комментарий' : 'Добавить комментарий'}
+							</button>
+							<button className="danger" disabled={busy} onClick={decline}>
+								<X size={18} />
+								Отказаться
+							</button>
+						</>
+					}
+				</div>
+
+
+				{/* {(job.status === 'AWAITING_CALL' || job.status === 'ACTIVE') &&
+					<div className='card-bottom-buttons-bottomline'>
+						<button className="primary" disabled={busy} onClick={editComment} >
+							{job.comment_text ? 'Редактировать комментарий' : 'Добавить комментарий'}
+						</button>
+						<button className="danger" disabled={busy} onClick={decline}>
+							Отказаться
+						</button>
+					</div>
+				} */}
+
 			</div>
 		}
+
 	</article>
 }
 
@@ -281,7 +475,7 @@ function CreateJobModal({
 		}
 	}
 
-	const closeOnBackdrop = (event: React.PointerEvent<HTMLDivElement>) => {
+	const closeOnBackdrop = (event: PointerEvent<HTMLDivElement>) => {
 		if (event.target === event.currentTarget && !busy) {
 			onClose()
 		}
@@ -331,7 +525,7 @@ function CreateJobModal({
 				</label>
 
 				<div className="actions modal-actions">
-					<button type="button" onClick={onClose} disabled={busy}>
+					<button className="danger" type="button" onClick={onClose} disabled={busy}>
 						Отмена
 					</button>
 					<button className="primary" type="submit" disabled={busy}>
