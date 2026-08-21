@@ -528,42 +528,34 @@ button:disabled {
 
 
 .job-text {
-    position: relative;
-    cursor: pointer;
-
     white-space: pre-wrap;
     line-height: 1.42;
     font-size: 14px;
-    border-radius: 10px;
-    margin: 0;
+
+    /* background-color: var(--card-p-bg); */
+    /* border-radius: 10px; */
+    /* padding: 12px; */
+
+    cursor: pointer;
 }
 
-.job-text.collapsed {
-    max-height: calc(1.42em * 3);
+.job-text-content-collapsed {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+
     overflow: hidden;
 }
 
 .job-text-more {
-    position: absolute;
-    right: 12px;
-    bottom: 12px;
+    display: inline-block;
 
-    padding-left: 18px;
-
-    background: linear-gradient(to right,
-            transparent,
-            var(--card-p-bg) 18px,
-            var(--card-p-bg));
-
-    color: var(--secondary-fg);
-    white-space: nowrap;
+    color: var(--active-btn-bg);
 }
 
 .job-text-hide {
-    color: inherit;
-    font: inherit;
+    color: var(--active-btn-bg);
 }
-
 
 
 
@@ -571,7 +563,7 @@ button:disabled {
 .job-comment {
     display: flex;
     flex-direction: column;
-    gap: 7px;
+    gap: 4px;
 
     padding: 10px 12px;
     border-radius: 10px;

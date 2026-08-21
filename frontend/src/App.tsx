@@ -220,25 +220,29 @@ function CollapsibleJobText({ text }: { text: string }) {
 	}
 
 	return (
-		<p
-			ref={ref}
-			className={`job-text ${expanded ? 'expanded' : 'collapsed'}`}
+		<div
+			className="job-text"
 			onClick={toggle}
 		>
-			{text}
+			<span
+				ref={ref}
+				className={expanded ? '' : 'job-text-content-collapsed'}
+			>
+				{text}
+			</span>
 
-			{/* {!expanded && overflowing && (
+			{!expanded && overflowing && (
 				<span className="job-text-more">
 					…показать больше
 				</span>
-			)} */}
+			)}
 
 			{expanded && (
 				<span className="job-text-hide">
-					{' '}скрыть
+					...скрыть
 				</span>
 			)}
-		</p>
+		</div>
 	)
 }
 
